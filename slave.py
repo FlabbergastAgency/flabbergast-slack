@@ -6,7 +6,6 @@ from flask import Flask, request, Response
 from slackeventsapi import SlackEventAdapter
 import webbrowser
 from urllib.parse import urlparse, parse_qs, unquote, urlencode
-import datetime
 import json
 from zoomus import ZoomClient
 
@@ -53,7 +52,12 @@ def build_zoommtg_url(meeting_number, password):
 @app.route('/openurl', methods=['POST'])
 def open_url():
     data = request.form
-    url = data.get('text')
+    url = data.get('url')
+
+    if 'zoom.us' in url:
+        meeting_id, password = extract_zoom_info(url)
+        url = build_zoommtg_url(meeting_id, password)
+
     webbrowser.open(url)
     return Response(), 200
 
@@ -61,7 +65,7 @@ def open_url():
 @app.route('/openzoom', methods=['POST'])
 def open_zoom():
     data = request.form
-    meeting_id, password = extract_zoom_info(data.get('text'))
+    meeting_id, password = extract_zoom_info(data.get('url'))
     url = build_zoommtg_url(meeting_id, password)
     webbrowser.open(url)
     return Response(), 200
@@ -84,7 +88,7 @@ def create_zoom():
     user_list = json.loads(user_list_response.content)
 
     # Selecta a user
-    user_id = user_list['users'][1]['id']
+    user_id = user_list['users'][0]['id']
 
     # Create the meeting
     meeting_response = client.meeting.create(user_id=user_id, type=1)
@@ -98,11 +102,13 @@ def create_zoom():
     start_url = meeting_info['start_url']
 
     # Start a Zoom and paste a link in channel
-    open_zoom(start_url)
-    slack_client.chat_postMessage(channel=data.get('channel_id'), text=join_url)
+    webbrowser.open(start_url)
+
+    slack_client.chat_postMessage(channel=data.get('channel_id'), text="Small Meeting Room URL:\n" + join_url)
 
     return Response(), 200
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=42069)
+    app.run(debug=True, host="0.0.0.0", port=42096)
+
