@@ -8,6 +8,11 @@ import webbrowser
 from urllib.parse import urlparse, parse_qs, unquote, urlencode
 import json
 from zoomus import ZoomClient
+import socket
+import threading
+import time
+import requests
+import sys
 
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -17,6 +22,31 @@ slack_event_adapter = SlackEventAdapter(os.environ['SIGNING_SECRET'], '/slack/ev
 
 slack_client = slack_sdk.WebClient(token=os.environ['SLACK_TOKEN'])
 BOT_ID = slack_client.api_call("auth.test")['user_id']
+
+MASTER_URL = 'http://192.168.1.151:42069'
+
+
+def process_string(input_string):
+    return input_string.replace(" ", "").lower()
+
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    return "Pong", 200
+
+
+def broadcast_slave():
+    while True:
+        try:
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            print(ip_address)
+            requests.post(f'{MASTER_URL}/register', json={'name': name, 'ip': ip_address, 'id': process_string(name)})
+            print(f"Broadcasted presence to master as {name}.")
+        except requests.RequestException as e:
+            print(f"Error broadcasting presence: {e}")
+
+        time.sleep(60)
 
 
 def extract_zoom_info(zoom_url):
@@ -110,5 +140,11 @@ def create_zoom():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=42096)
+    name = ' '.join(sys.argv[1:])
+
+    broadcast_thread = threading.Thread(target=broadcast_slave, daemon=True)
+    broadcast_thread.start()
+
+    app.run(debug=True, host='0.0.0.0', port=42096)
+
 
