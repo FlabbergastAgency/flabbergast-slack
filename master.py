@@ -22,6 +22,8 @@ slack_event_adapter = SlackEventAdapter(os.environ['SIGNING_SECRET'], '/slack/ev
 slack_client = slack_sdk.WebClient(token=os.environ['SLACK_TOKEN'])
 BOT_ID = slack_client.api_call("auth.test")['user_id']
 
+last_know_url = ""
+
 
 def extract_zoom_info(zoom_url):
     parsed_url = urlparse(zoom_url)
@@ -66,10 +68,16 @@ def send_request_to_slave(path, data):
         print("Response:", response.text)
 
 
+def open_url_local(url):
+    webbrowser.open(url)
+
+
 @app.route('/openurl', methods=['POST'])
 def open_url():
+    global last_know_url
     data = request.form
     parsed_data = data.get('text').split(' ')
+    channel_id = data.get('channel_id')
     url = parsed_data[-1]
 
     # Parsing of the Zoom link
@@ -77,72 +85,159 @@ def open_url():
         meeting_id, password = extract_zoom_info(url)
         url = build_zoommtg_url(meeting_id, password)
 
-    # Opening a link on a correct device
-    if len(parsed_data) == 1 or parsed_data[0] in main_meeting_room_names:
-        webbrowser.open(url)
-        return Response(), 200
+    last_know_url = url
 
-    elif parsed_data[0] in secondary_meeting_room_names:
-        send_request_to_slave('/openurl', {'url': url})
-        return Response(), 200
+    message_payload = {
+        "channel": channel_id,
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Select a meeting room where you want to open a link\n*Available Meeting Rooms:*"
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Main Meeting Room"
+                        },
+                        "action_id": "open:main"
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Secondary Meeting Room"
+                        },
+                        "action_id": "open:secondary"
+                    }
+                ]
+            }
+        ]
+    }
 
-    else:
-        text = "Wrong Meeting Room Name!!\nMain Meeting Room Names: " + str(main_meeting_room_names) +\
-               "\nSecondary Meeting Room Names: " + str(secondary_meeting_room_names) + "\n"
-        slack_client.chat_postMessage(channel=data.get('channel_id'), text=text)
-        return Response(), 200
+    slack_client.chat_postMessage(**message_payload)
+
+    return Response(), 200
+
+
+def create_zoom_local(channel_id):
+    # Replace with your actual Zoom credentials
+    client_id = os.environ['client_id']
+    client_secret = os.environ['client_secret']
+    account_id = os.environ['account_id']
+
+    # Create a client
+    client = ZoomClient(client_id, client_secret, account_id)
+
+    # List all users
+    user_list_response = client.user.list()
+    user_list = json.loads(user_list_response.content)
+
+    # Selecta a user
+    user_id = user_list['users'][1]['id']
+
+    # Create the meeting
+    meeting_response = client.meeting.create(user_id=user_id, type=1)
+    meeting_info = json.loads(meeting_response.content)
+
+    # Print the meeting information
+    print(meeting_info)
+
+    # Get the meeting join url
+    join_url = meeting_info['join_url']
+    start_url = meeting_info['start_url']
+
+    # Start a Zoom and paste a link in channel
+    webbrowser.open(start_url)
+
+    slack_client.chat_postMessage(channel=channel_id, text="Big Meeting Room URL:\n" + join_url)
+
+
+def delete_message(channel_id, ts):
+    delete_payload = {
+        "channel": channel_id,
+        "ts": ts,
+    }
+
+    slack_client.chat_delete(**delete_payload)
+
+
+@app.route('/interaction', methods=["POST"])
+def slack_interactive():
+    global last_know_url
+    payload = request.form.get("payload")
+
+    data = json.loads(payload)
+    channel_id = data["channel"]["id"]
+    action_id = data["actions"][0]["action_id"]
+    ts = data["message"]["ts"]
+
+    extracted_command = action_id.split(':')
+
+    if extracted_command[0] == 'create':
+        if extracted_command[1] == 'main':
+            create_zoom_local(channel_id)
+        elif extracted_command[1] == 'secondary':
+            send_request_to_slave('/createzoom', {'channel_id': channel_id})
+    elif extracted_command[0] == 'open':
+        if extracted_command[1] == 'main':
+            open_url_local(last_know_url)
+        elif extracted_command[1] == 'secondary':
+            send_request_to_slave('/openurl', {'url': last_know_url})
+        last_know_url = ""
+
+    delete_message(channel_id, ts)
+
+    return Response(), 200
 
 
 @app.route('/createzoom', methods=['POST'])
 def create_zoom():
     data = request.form
     channel_id = data.get('channel_id')
-    selected_meeting_room = data.get('text')
 
-    # Creating a new Zoom meeting on a right device
-    if selected_meeting_room == "" or selected_meeting_room in main_meeting_room_names:
-        # Replace with your actual Zoom credentials
-        client_id = os.environ['client_id']
-        client_secret = os.environ['client_secret']
-        account_id = os.environ['account_id']
+    message_payload = {
+        "channel": channel_id,
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Select a meeting room where you want to create a meeting\n*Available Meeting Rooms:*"
+                }
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Main Meeting Room"
+                        },
+                        "action_id": "create:main"
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "Secondary Meeting Room"
+                        },
+                        "action_id": "create:secondary"
+                    }
+                ]
+            }
+        ]
+    }
 
-        # Create a client
-        client = ZoomClient(client_id, client_secret, account_id)
-
-        # List all users
-        user_list_response = client.user.list()
-        user_list = json.loads(user_list_response.content)
-
-        # Selecta a user
-        user_id = user_list['users'][1]['id']
-
-        # Create the meeting
-        meeting_response = client.meeting.create(user_id=user_id, type=1)
-        meeting_info = json.loads(meeting_response.content)
-
-        # Print the meeting information
-        print(meeting_info)
-
-        # Get the meeting join url
-        join_url = meeting_info['join_url']
-        start_url = meeting_info['start_url']
-
-        # Start a Zoom and paste a link in channel
-        webbrowser.open(start_url)
-
-        slack_client.chat_postMessage(channel=channel_id, text="Big Meeting Room URL:\n" + join_url)
-
-        return Response(), 200
-
-    elif selected_meeting_room in secondary_meeting_room_names:
-        send_request_to_slave('/createzoom', {'channel_id': channel_id})
-        return Response(), 200
-
-    else:
-        text = "Wrong Meeting Room Name!!\nMain Meeting Room Names: " + str(main_meeting_room_names) +\
-               "\nSecondary Meeting Room Names: " + str(secondary_meeting_room_names) + "\n"
-        slack_client.chat_postMessage(channel=data.get('channel_id'), text=text)
-        return Response(), 200
+    slack_client.chat_postMessage(**message_payload)
+    return Response(), 200
 
 
 if __name__ == "__main__":
