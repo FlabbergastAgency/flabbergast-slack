@@ -2,12 +2,13 @@ import slack_sdk
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, make_response
 from slackeventsapi import SlackEventAdapter
 import webbrowser
 from urllib.parse import urlparse, parse_qs, unquote, urlencode
 import json
 from zoomus import ZoomClient
+from datetime import datetime, timedelta
 import requests
 
 env_path = Path('.') / '.env'
@@ -21,6 +22,10 @@ BOT_ID = slack_client.api_call("auth.test")['user_id']
 
 last_known_url = ""
 active_slaves = {}
+
+last_interaction = {}
+
+message_timestamps = {}
 
 
 def ping_slave(ip):
@@ -166,8 +171,27 @@ def send_request_to_slave(path, data, url):
         print("Response:", response.text)
 
 
+def check_recent_interaction(meeting_room):
+    if meeting_room in last_interaction:
+        return datetime.now() - last_interaction[meeting_room] < timedelta(hours=1)
+    return False
+
+
+def update_interaction_timestamp(meeting_room):
+    last_interaction[meeting_room] = datetime.now()
+
+
 def open_url_local(url):
     webbrowser.open(url)
+
+
+def delete_message(channel_id, ts):
+    delete_payload = {
+        "channel": channel_id,
+        "ts": ts,
+    }
+
+    slack_client.chat_delete(**delete_payload)
 
 
 @app.route('/openurl', methods=['POST'])
@@ -176,10 +200,14 @@ def open_url():
     data = request.form
     parsed_data = data.get('text').split(' ')
     channel_id = data.get('channel_id')
+    user_id = data.get('user_id')
     url = parsed_data[-1]
 
-
     ping_all_slaves()
+
+    recent_interaction = any(
+        check_recent_interaction(room) for room in active_slaves
+    )
 
     if 'zoom.us' in url:
         meeting_id, password = extract_zoom_info(url)
@@ -187,14 +215,30 @@ def open_url():
 
     last_know_url = url
 
-    message_payload = generate_blocks(
-        "Select a meeting room where you want to open a link\n*Available Meeting Rooms:*",
+    # if recent_interaction:
+    warning_message = generate_blocks(
+        "Warning: A session was recently started in one of the meeting rooms.\nPlease check with your team.",
         channel_id,
         active_slaves,
         "open",
     )
+    response = slack_client.chat_postEphemeral(user=user_id, **warning_message)
+    message_timestamps[channel_id] = response['message_ts']
+    app.logger.info(response)
+    # else:
+    #     message_payload = generate_blocks(
+    #         "Select a meeting room where you want to open a link\n*Available Meeting Rooms:*",
+    #         channel_id,
+    #         active_slaves,
+    #         "open",
+    #     )
+    #     response = slack_client.chat_postEphemeral(user=user_id, **message_payload)
+    #     print(response)
+    #     message_timestamps[channel_id] = response['ts']
 
-    slack_client.chat_postMessage(**message_payload)
+    # Update timestamps for active meeting rooms after action
+    for room in active_slaves:
+        update_interaction_timestamp(room)
 
     return Response(), 200
 
@@ -232,15 +276,6 @@ def create_zoom_local(channel_id):
     slack_client.chat_postMessage(channel=channel_id, text="Big Meeting Room URL:\n" + join_url)
 
 
-def delete_message(channel_id, ts):
-    delete_payload = {
-        "channel": channel_id,
-        "ts": ts,
-    }
-
-    slack_client.chat_delete(**delete_payload)
-
-
 @app.route('/interaction', methods=["POST"])
 def slack_interactive():
     global last_know_url
@@ -249,7 +284,6 @@ def slack_interactive():
     data = json.loads(payload)
     channel_id = data["channel"]["id"]
     action_id = data["actions"][0]["action_id"]
-    ts = data["message"]["ts"]
 
     extracted_command = action_id.split(':')
 
@@ -267,9 +301,19 @@ def slack_interactive():
             send_request_to_slave('/openurl', {'url': last_know_url}, active_slaves[extracted_command[1]][0])
         last_know_url = ""
 
-    delete_message(channel_id, ts)
+    # if channel_id in message_timestamps:
+    #     x = message_timestamps[channel_id]
+    #     app.logger.info(x)
+    #     delete_message(channel_id, x)
+    #     del message_timestamps[channel_id]
 
-    return Response(), 200
+    response = {
+        "response_type": "ephemeral",
+        "replace_original": True,
+        "delete_original": True
+    }
+
+    return jsonify(response)
 
 
 @app.route('/createzoom', methods=['POST'])

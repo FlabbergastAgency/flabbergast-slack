@@ -25,6 +25,7 @@ BOT_ID = slack_client.api_call("auth.test")['user_id']
 
 MASTER_URL = 'http://82.214.97.154:42069'
 
+
 def process_string(input_string):
     return input_string.replace(" ", "").lower()
 
@@ -82,10 +83,6 @@ def build_zoommtg_url(meeting_number, password):
 def open_url():
     data = request.form
     url = data.get('url')
-
-    # if 'zoom.us' in url:
-    #     meeting_id, password = extract_zoom_info(url)
-    #     url = build_zoommtg_url(meeting_id, password)
 
     webbrowser.open(url)
     return Response(), 200
