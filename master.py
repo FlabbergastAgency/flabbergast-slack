@@ -176,6 +176,7 @@ def open_url():
     data = request.form
     parsed_data = data.get('text').split(' ')
     channel_id = data.get('channel_id')
+    user_id = data.get('user_id')
     url = parsed_data[-1]
 
 
@@ -194,7 +195,7 @@ def open_url():
         "open",
     )
 
-    slack_client.chat_postMessage(**message_payload)
+    slack_client.chat_postEphemeral(user = user_id, **message_payload)
 
     return Response(), 200
 
@@ -249,7 +250,7 @@ def slack_interactive():
     data = json.loads(payload)
     channel_id = data["channel"]["id"]
     action_id = data["actions"][0]["action_id"]
-    ts = data["message"]["ts"]
+    response_url = data["response_url"]
 
     extracted_command = action_id.split(':')
 
@@ -267,7 +268,9 @@ def slack_interactive():
             send_request_to_slave('/openurl', {'url': last_know_url}, active_slaves[extracted_command[1]][0])
         last_know_url = ""
 
-    delete_message(channel_id, ts)
+    delete_payload = {"delete_original": True}
+
+    requests.post(response_url, json=delete_payload)
 
     return Response(), 200
 
@@ -276,6 +279,7 @@ def slack_interactive():
 def create_zoom():
     data = request.form
     channel_id = data.get('channel_id')
+    user_id = data.get('user_id')
 
     ping_all_slaves()
 
@@ -286,7 +290,8 @@ def create_zoom():
         "create",
     )
 
-    slack_client.chat_postMessage(**message_payload)
+    slack_client.chat_postEphemeral(user = user_id, **message_payload)
+
     return Response(), 200
 
 
